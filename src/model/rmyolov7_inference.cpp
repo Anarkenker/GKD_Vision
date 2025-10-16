@@ -396,7 +396,7 @@ std::future<std::vector<yolo_kpt::Object>> yolo_kpt::work_async(cv::Mat src_img)
     }
     
     // 创建一个线程来处理异步推理和结果处理，因为OpenVINO set_callback需要不同的签名
-    std::thread([this, &async_infer_request, request_id, src_img, padd, promise]() {
+    std::thread([this, &async_infer_request, input_tensor, request_id, src_img, padd, promise]() {
         try {
             // 开始异步推理
             async_infer_request.set_input_tensor(input_tensor);
@@ -414,6 +414,7 @@ std::future<std::vector<yolo_kpt::Object>> yolo_kpt::work_async(cv::Mat src_img)
             // 后处理
             std::vector<Object> proposals;
             std::vector<Object> objects8;
+            std::vector<Object> objects16;
             std::vector<Object> objects16;
             std::vector<Object> objects32;
             generate_proposals(8, result_p8, objects8);
