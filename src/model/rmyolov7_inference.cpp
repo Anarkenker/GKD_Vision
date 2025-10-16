@@ -18,6 +18,10 @@ yolo_kpt::yolo_kpt() {
     // std::cout << input_tensor1.get_shape() << std::endl;
 }
 
+yolo_kpt::~yolo_kpt() {
+    deinit_async_inference();
+}
+
 cv::Mat yolo_kpt::letter_box(cv::Mat &src, int h, int w, std::vector<float> &padd) {
     int in_w = src.cols;
     int in_h = src.rows;
@@ -331,6 +335,147 @@ std::vector<yolo_kpt::Object> yolo_kpt::work(cv::Mat src_img) {
     
 #endif
     return object_result;
+}
+
+void yolo_kpt::init_async_inference() {
+    // 创建多个InferRequest实例用于异步推理，提高吞吐量
+    async_infer_requests_.clear();
+    for (int i = 0; i < async_infer_num_; ++i) {
+        ov::InferRequest async_request = compiled_model.create_infer_request();
+        async_infer_requests_.push_back(async_request);
+        available_request_ids_.push(i);
+    }
+}
+
+void yolo_kpt::deinit_async_inference() {
+    // 清理异步推理相关资源
+    async_infer_requests_.clear();
+    // 清空队列
+    std::queue<int> empty;
+    std::swap(available_request_ids_, empty);
+}
+
+std::future<std::vector<yolo_kpt::Object>> yolo_kpt::work_async(cv::Mat src_img) {
+    auto promise = std::make_shared<std::promise<std::vector<Object>>>();
+    auto future = promise->get_future();
+    
+    // 获取一个可用的InferRequest
+    int request_id;
+    {
+        std::unique_lock<std::mutex> lock(async_mutex_);
+        if (available_request_ids_.empty()) {
+            // 如果没有可用的request，直接返回，实际应用中可能需要阻塞或缓存
+            promise->set_exception(std::make_exception_ptr(std::runtime_error("No available infer requests")));
+            return future;
+        }
+        request_id = available_request_ids_.front();
+        available_request_ids_.pop();
+    }
+    
+    ov::InferRequest& async_infer_request = async_infer_requests_[request_id];
+    
+    // 前处理
+    int img_h = IMG_SIZE;
+    int img_w = IMG_SIZE;
+    cv::Mat img;
+    std::vector<float> padd;
+
+    cv::Mat boxed = letter_box(src_img, img_h, img_w, padd);
+    cv::cvtColor(boxed, img, cv::COLOR_BGR2RGB);
+    
+    // 设置输入
+    ov::Tensor input_tensor = async_infer_request.get_input_tensor(0);
+    auto data1 = input_tensor.data<float>();
+    for (int h = 0; h < img_h; h++) {
+        for (int w = 0; w < img_w; w++) {
+            for (int c = 0; c < 3; c++) {
+                int out_index = c * img_h * img_w + h * img_w + w;
+                data1[out_index] = float(img.at<cv::Vec3b>(h, w)[c]) / 255.0f;
+            }
+        }
+    }
+    
+    // 定义回调函数处理推理结果
+    auto callback = [this, request_id, src_img, padd, promise](ov::InferRequest handle) {
+        try {
+            // 获取输出
+            auto output_tensor_p8 = handle.get_output_tensor(0);
+            const float *result_p8 = output_tensor_p8.data<const float>();
+            auto output_tensor_p16 = handle.get_output_tensor(1);
+            const float *result_p16 = output_tensor_p16.data<const float>();
+            auto output_tensor_p32 = handle.get_output_tensor(2);
+            const float *result_p32 = output_tensor_p32.data<const float>();
+            
+            // 后处理
+            std::vector<Object> proposals;
+            std::vector<Object> objects8;
+            std::vector<Object> objects16;
+            std::vector<Object> objects32;
+            generate_proposals(8, result_p8, objects8);
+            proposals.insert(proposals.end(), objects8.begin(), objects8.end());
+            generate_proposals(16, result_p16, objects16);
+            proposals.insert(proposals.end(), objects16.begin(), objects16.end());
+            generate_proposals(32, result_p32, objects32);
+            proposals.insert(proposals.end(), objects32.begin(), objects32.end());
+            std::vector<int> classIds;
+            std::vector<float> confidences;
+            std::vector<cv::Rect> boxes;
+            std::vector<cv::Point2f> points;
+            for (size_t i = 0; i < proposals.size(); i++) {
+                classIds.push_back(proposals[i].label);
+                confidences.push_back(proposals[i].prob);
+                boxes.push_back(proposals[i].rect);
+                for (auto ii: proposals[i].kpt)
+                    points.push_back(ii);
+            }
+            std::vector<int> picked;
+            cv::dnn::NMSBoxes(boxes, confidences, CONF_THRESHOLD, NMS_THRESHOLD, picked);
+            std::vector<Object> object_result;
+            for (size_t i = 0; i < picked.size(); i++) {
+                cv::Rect scaled_box = scale_box(boxes[picked[i]], padd, src_img.cols, src_img.rows);
+                std::vector<cv::Point2f> scaled_point;
+                if (KPT_NUM != 0)
+                    scaled_point = scale_box_kpt(points, padd, src_img.cols, src_img.rows, picked[i]);
+                Object obj;
+                obj.rect = scaled_box;
+                obj.label = classIds[picked[i]];
+                obj.prob = confidences[picked[i]];
+                if (KPT_NUM != 0)
+                    obj.kpt = scaled_point;
+                object_result.push_back(obj);
+            }
+            
+            // 设置结果
+            promise->set_value(object_result);
+            
+            // 释放InferRequest让其可用于下一次推理
+            {
+                std::lock_guard<std::mutex> lock(async_mutex_);
+                available_request_ids_.push(request_id);
+            }
+        } catch (...) {
+            // 出错时也要释放InferRequest
+            {
+                std::lock_guard<std::mutex> lock(async_mutex_);
+                available_request_ids_.push(request_id);
+            }
+            promise->set_exception(std::current_exception());
+        }
+    };
+    
+    // 设置异步回调
+    async_infer_request.set_callback(callback);
+    
+    // 开始异步推理
+    async_infer_request.set_input_tensor(input_tensor);
+    async_infer_request.start_async();
+    
+    return future;
+}
+
+void yolo_kpt::set_callback(AsyncInferenceCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback_ = callback;
 }
 
 

@@ -43,6 +43,9 @@ void Pipeline::detector_baseline_thread(
     /*推理模型*/
     yolo_kpt model;
     std::vector<yolo_kpt::Object> result;
+    
+    // 初始化异步推理
+    model.init_async_inference();
     /*帧率统计*/
     Timer timer, timer1, timer2, timer3;
 
@@ -136,8 +139,9 @@ void Pipeline::detector_baseline_thread(
 
         /*------识别------*/
         timer1.begin();
-        //推理
-        result = model.work(inputImage);
+        //推理 - 使用异步推理
+        auto future_result = model.work_async(inputImage);
+        result = future_result.get(); // 等待异步推理完成（在实际应用中，可以更巧妙地安排）
         std::vector<yolo_kpt::Object> enemy;
         for (auto& obj : result)
         {

@@ -17,6 +17,11 @@
 #include <opencv2/dnn/dnn.hpp>
 #undef Status
 #include <openvino/openvino.hpp>
+#include <future>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
 // #include <inference_engine.hpp>
 // using namespace InferenceEngine;
 
@@ -47,9 +52,13 @@
 #define CLS_NUM 4
 #define MODEL_PATH ""
 #endif
+
+typedef std::function<void(const std::vector<yolo_kpt::Object>&)> AsyncInferenceCallback;
+
 class yolo_kpt {
 public:
     yolo_kpt();
+    ~yolo_kpt();
 
     struct Object {
         /*图像识别数据*/
@@ -76,6 +85,11 @@ public:
     static void generate_proposals(int stride, const float *feat, std::vector<Object> &objects);
 
     std::vector<Object> work(cv::Mat src_img);
+    
+    void init_async_inference();
+    void deinit_async_inference(); // 这里是新的用于异步推理的函数
+    std::future<std::vector<Object>> work_async(cv::Mat src_img);
+    void set_callback(AsyncInferenceCallback callback);
 
     /*----新增函数----*/
     std::string label2string(int num);
@@ -88,8 +102,16 @@ private:
     ov::Core core;
     std::shared_ptr<ov::Model> model;
     ov::CompiledModel compiled_model;
-    ov::InferRequest infer_request;
+    ov::InferRequest infer_request;  // 用于同步推理
     ov::Tensor input_tensor1;
+    
+    // 异步推理相关
+    std::vector<ov::InferRequest> async_infer_requests_;
+    std::queue<int> available_request_ids_;
+    std::mutex async_mutex_;
+    AsyncInferenceCallback callback_;
+    std::mutex callback_mutex_;
+    int async_infer_num_ = 2;  // 使用2个异步推理请求
 #if DETECT_MODE == 0
     const std::vector<std::string> class_names = {
             "B1", "B2", "B3", "B4", "B5", "BO", "BS", "R1", "R2", "R3", "R4", "R5", "RO", "RS"
