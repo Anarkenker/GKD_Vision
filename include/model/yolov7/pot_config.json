@@ -1,0 +1,23 @@
+{
+  "model": {
+    "model_name": "rmyolov7-latest",
+    "model": "rmyolov7-latest.xml",
+    "weights": "rmyolov7-latest.bin"
+  },
+  "engine": {
+    "type": "simplified",
+    "data_source": "../calibration_images"
+  },
+  "compression": {
+    "algorithms": [
+      {
+        "name": "DefaultQuantization",
+        "params": {
+          "target_device": "CPU",
+          "preset": "performance",
+          "stat_subset_size": 150
+        }
+      }
+    ]
+  }
+}
