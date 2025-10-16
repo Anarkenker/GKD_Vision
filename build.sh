@@ -42,8 +42,7 @@ echo -e "${yellow}环境已准备：$SYS_DIR${reset}"
 # 2. 构建
 # ==============================================================
 echo -e "${yellow}<--- Start CMake (${TARGET}) --->${reset}"
-#rm -rf build && mkdir build && 
-cd build
+rm -rf build && mkdir build && cd build
 cmake -DARMY=${TARGET} ..
 make -j$(nproc)
 cd ..
@@ -66,20 +65,3 @@ sudo cp -rf config/forward_config/* "$FORWARD_CONFIG_DIR/" 2>/dev/null || true
 sudo cp -f data/uniconfig/Config.json "$SYS_DIR/" 2>/dev/null || true
 
 echo -e "${yellow}配置文件已更新到：$FORWARD_CONFIG_DIR${reset}"
-
-# ==============================================================
-# 5. 运行
-# ==============================================================
-echo -e "${yellow}<--- 启动 GKD_Vision (${TARGET}) --->${reset}"
-sudo pkill GKD_Vision 2>/dev/null || true
-sudo install -m755 build/GKD_Vision /usr/local/bin/GKD_Vision
-
-if [ $verbose = 1 ]; then
-    GKD_Vision -v
-elif [ $imshow = 1 ]; then
-    GKD_Vision -s
-else
-    GKD_Vision
-fi
-
-echo -e "${yellow}<----- ✅ OVER ----->${reset}"
