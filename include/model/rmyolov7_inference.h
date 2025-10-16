@@ -53,8 +53,8 @@
 #define MODEL_PATH ""
 #endif
 
-typedef std::function<void(const std::vector<yolo_kpt::Object>&)> AsyncInferenceCallback;
-
+// 在类定义后再定义回调类型
+class yolo_kpt;  // 前向声明
 class yolo_kpt {
 public:
     yolo_kpt();
@@ -72,12 +72,15 @@ public:
         cv::Mat pnp_tvec;
         cv::Mat pnp_rvec;
     };
+    
+    // 异步推理回调函数类型定义移到这里
+    typedef std::function<void(const std::vector<yolo_kpt::Object>&)> AsyncInferenceCallback;
     cv::Mat letter_box(cv::Mat &src, int h, int w, std::vector<float> &padd);
 
     std::vector<cv::Point2f>
-    scale_box_kpt(std::vector<cv::Point2f> points, std::vector<float> &padd, float raw_w, float raw_h, int idx);
+    scale_box_kpt(std::vector<cv::Point2f> points, const std::vector<float> &padd, float raw_w, float raw_h, int idx);
 
-    cv::Rect scale_box(cv::Rect box, std::vector<float> &padd, float raw_w, float raw_h);
+    cv::Rect scale_box(cv::Rect box, const std::vector<float> &padd, float raw_w, float raw_h);
 
     void drawPred(int classId, float conf, cv::Rect box, std::vector<cv::Point2f> point, cv::Mat &frame,
                   const std::vector<std::string> &classes);
@@ -131,5 +134,8 @@ private:
     }
 
 };
+
+// 在类定义之后定义回调类型
+typedef std::function<void(const std::vector<yolo_kpt::Object>&)> AsyncInferenceCallback;
 
 #endif //GMASTER_CV_2023_ARMORNEWYOLO_H

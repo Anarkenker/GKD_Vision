@@ -47,7 +47,7 @@ cv::Mat yolo_kpt::letter_box(cv::Mat &src, int h, int w, std::vector<float> &pad
     return resize_img;
 }
 
-cv::Rect yolo_kpt::scale_box(cv::Rect box, std::vector<float> &padd, float raw_w, float raw_h) {
+cv::Rect yolo_kpt::scale_box(cv::Rect box, const std::vector<float> &padd, float raw_w, float raw_h) {
     cv::Rect scaled_box;
     scaled_box.width = box.width / padd[2];
     scaled_box.height = box.height / padd[2];
@@ -57,7 +57,7 @@ cv::Rect yolo_kpt::scale_box(cv::Rect box, std::vector<float> &padd, float raw_w
 }
 
 std::vector<cv::Point2f>
-yolo_kpt::scale_box_kpt(std::vector<cv::Point2f> points, std::vector<float> &padd, float raw_w, float raw_h, int idx) {
+yolo_kpt::scale_box_kpt(std::vector<cv::Point2f> points, const std::vector<float> &padd, float raw_w, float raw_h, int idx) {
     std::vector<cv::Point2f> scaled_points;
     for (int ii = 0; ii < KPT_NUM; ii++) {
         points[idx * KPT_NUM + ii].x = std::max(
@@ -395,15 +395,20 @@ std::future<std::vector<yolo_kpt::Object>> yolo_kpt::work_async(cv::Mat src_img)
         }
     }
     
-    // 定义回调函数处理推理结果
-    auto callback = [this, request_id, src_img, padd, promise](ov::InferRequest handle) {
+    // 创建一个线程来处理异步推理和结果处理，因为OpenVINO set_callback需要不同的签名
+    std::thread([this, &async_infer_request, request_id, src_img, padd, promise]() {
         try {
+            // 开始异步推理
+            async_infer_request.set_input_tensor(input_tensor);
+            async_infer_request.start_async();
+            async_infer_request.wait(); // 等待推理完成
+            
             // 获取输出
-            auto output_tensor_p8 = handle.get_output_tensor(0);
+            auto output_tensor_p8 = async_infer_request.get_output_tensor(0);
             const float *result_p8 = output_tensor_p8.data<const float>();
-            auto output_tensor_p16 = handle.get_output_tensor(1);
+            auto output_tensor_p16 = async_infer_request.get_output_tensor(1);
             const float *result_p16 = output_tensor_p16.data<const float>();
-            auto output_tensor_p32 = handle.get_output_tensor(2);
+            auto output_tensor_p32 = async_infer_request.get_output_tensor(2);
             const float *result_p32 = output_tensor_p32.data<const float>();
             
             // 后处理
@@ -447,28 +452,16 @@ std::future<std::vector<yolo_kpt::Object>> yolo_kpt::work_async(cv::Mat src_img)
             
             // 设置结果
             promise->set_value(object_result);
-            
-            // 释放InferRequest让其可用于下一次推理
-            {
-                std::lock_guard<std::mutex> lock(async_mutex_);
-                available_request_ids_.push(request_id);
-            }
         } catch (...) {
-            // 出错时也要释放InferRequest
-            {
-                std::lock_guard<std::mutex> lock(async_mutex_);
-                available_request_ids_.push(request_id);
-            }
             promise->set_exception(std::current_exception());
         }
-    };
-    
-    // 设置异步回调
-    async_infer_request.set_callback(callback);
-    
-    // 开始异步推理
-    async_infer_request.set_input_tensor(input_tensor);
-    async_infer_request.start_async();
+        
+        // 无论如何都要释放InferRequest让其可用于下一次推理
+        {
+            std::lock_guard<std::mutex> lock(async_mutex_);
+            available_request_ids_.push(request_id);
+        }
+    }).detach();
     
     return future;
 }
